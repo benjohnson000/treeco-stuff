@@ -1,24 +1,19 @@
 import pandas as pd
 import streamlit as st
 
+from branches import load_branches
 from config import load_settings, save_settings
 from database import engine
 from metrics import build_inventory_projection
 
 
-st.set_page_config(page_title="ECI Spruce Reorder Tool", layout="wide")
+st.set_page_config(page_title="Spruce Reorder Tool", layout="wide")
 
 
 def load_projection(settings, include_inactive):
     try:
-        inventory = pd.read_sql(
-            "SELECT sku, description, on_hand, on_order, available FROM inventory",
-            engine,
-        )
-        usage_history = pd.read_sql(
-            "SELECT sku, year, month, quantity_used FROM usage_history",
-            engine,
-        )
+        inventory = pd.read_sql("SELECT * FROM inventory", engine)
+        usage_history = pd.read_sql("SELECT * FROM usage_history", engine)
     except Exception as error:
         st.error("No imported inventory data is available yet.")
         st.code("py -3.14 main.py", language="powershell")
@@ -26,10 +21,7 @@ def load_projection(settings, include_inactive):
         st.stop()
 
     return build_inventory_projection(
-        inventory,
-        usage_history,
-        settings,
-        include_inactive=include_inactive,
+        inventory, usage_history, settings, include_inactive=include_inactive
     )
 
 
@@ -37,75 +29,94 @@ def reset_editor_state():
     st.session_state.pop("inventory_editor", None)
 
 
+def item_key(row):
+    return f"{row.sku}|{row.branch_id}"
+
+
 def initialize_selection(projection):
-    if "selected_skus" not in st.session_state:
-        st.session_state.selected_skus = set()
+    if "selected_item_keys" not in st.session_state:
+        st.session_state.selected_item_keys = set()
+    if "order_amount_overrides" not in st.session_state:
+        st.session_state.order_amount_overrides = {}
 
     if not st.session_state.get("selection_initialized"):
-        st.session_state.selected_skus = set(
+        st.session_state.selected_item_keys = set(
             projection.loc[
-                projection["recommended_order_qty"].fillna(0).gt(0), "sku"
+                projection["recommended_order_qty"].gt(0), "item_key"
             ]
         )
         st.session_state.selection_initialized = True
 
-    if "order_amount_overrides" not in st.session_state:
-        st.session_state.order_amount_overrides = {}
-
-
-def update_order_state(edited_table, visible_skus):
-    selected_visible_skus = set(
-        edited_table.loc[edited_table["order_selected"], "sku"]
-    )
-    st.session_state.selected_skus.difference_update(visible_skus)
-    st.session_state.selected_skus.update(selected_visible_skus)
-
-    for row in edited_table.itertuples(index=False):
-        recommended_amount = 0 if pd.isna(row.recommended_order_qty) else row.recommended_order_qty
-        order_amount = 0 if pd.isna(row.order_amount) else row.order_amount
-
-        if order_amount == recommended_amount:
-            st.session_state.order_amount_overrides.pop(row.sku, None)
-        else:
-            st.session_state.order_amount_overrides[row.sku] = order_amount
-
 
 def add_order_amounts(projection):
-    display_projection = projection.copy()
-    display_projection["order_amount"] = display_projection["sku"].map(
+    display = projection.copy()
+    display["order_amount"] = display["item_key"].map(
         st.session_state.order_amount_overrides
     )
-    display_projection["order_amount"] = display_projection["order_amount"].fillna(
-        display_projection["recommended_order_qty"]
+    display["order_amount"] = display["order_amount"].fillna(
+        display["recommended_order_qty"]
     ).fillna(0)
-    return display_projection
+    return display
+
+
+def update_order_state(edited_table, visible_keys):
+    selected_visible = set(
+        edited_table.loc[edited_table["order_selected"], "item_key"]
+    )
+    st.session_state.selected_item_keys.difference_update(visible_keys)
+    st.session_state.selected_item_keys.update(selected_visible)
+
+    for row in edited_table.itertuples(index=False):
+        recommended = 0 if pd.isna(row.recommended_order_qty) else row.recommended_order_qty
+        amount = 0 if pd.isna(row.order_amount) else row.order_amount
+        if amount == recommended:
+            st.session_state.order_amount_overrides.pop(row.item_key, None)
+        else:
+            st.session_state.order_amount_overrides[row.item_key] = amount
+
+
+def build_order_export(selected_items, selected_branch_ids):
+    branches = load_branches()
+    selected_branches = {
+        branch_id: branches[branch_id]
+        for branch_id in selected_branch_ids
+    }
+    branch_columns = [
+        f"branch {branch_id} ({name.lower()})"
+        for branch_id, name in selected_branches.items()
+    ]
+    orders = selected_items.pivot_table(
+        index=["sku", "description"],
+        columns="branch_id",
+        values="order_amount",
+        aggfunc="sum",
+        fill_value=0,
+    ).reset_index()
+
+    orders = orders.rename(columns={
+        branch_id: f"branch {branch_id} ({name.lower()})"
+        for branch_id, name in selected_branches.items()
+    })
+    for column in branch_columns:
+        if column not in orders:
+            orders[column] = 0
+    orders["total order (all branches)"] = orders[branch_columns].sum(axis=1)
+    orders = orders.rename(columns={"sku": "item"})
+    return orders[["item", "description", "total order (all branches)", *branch_columns]]
 
 
 def main():
     st.title("ECI Spruce Inventory Reorder Tool")
+    st.caption("Recommendations and selections are managed separately for each branch.")
 
     current_settings = load_settings()
+    branches = load_branches()
     with st.sidebar:
         st.header("Reorder settings")
         with st.form("settings_form"):
-            stock_target_days = st.number_input(
-                "Stock target (days)",
-                min_value=0.0,
-                value=float(current_settings["stock_target_days"]),
-                step=1.0,
-            )
-            vendor_lead_time_days = st.number_input(
-                "Vendor lead time (days)",
-                min_value=0.0,
-                value=float(current_settings["vendor_lead_time_days"]),
-                step=1.0,
-            )
-            buffer_days = st.number_input(
-                "Buffer time (days)",
-                min_value=0.0,
-                value=float(current_settings["buffer_days"]),
-                step=1.0,
-            )
+            stock_target_days = st.number_input("Stock target (days)", min_value=0.0, value=float(current_settings["stock_target_days"]), step=1.0)
+            vendor_lead_time_days = st.number_input("Vendor lead time (days)", min_value=0.0, value=float(current_settings["vendor_lead_time_days"]), step=1.0)
+            buffer_days = st.number_input("Buffer time (days)", min_value=0.0, value=float(current_settings["buffer_days"]), step=1.0)
             save_clicked = st.form_submit_button("Save settings")
 
         if save_clicked:
@@ -118,121 +129,91 @@ def main():
             st.success("Settings saved.")
             st.rerun()
 
-        include_inactive = st.checkbox(
-            "Show items with no stock and no sales",
-            value=False,
+        include_inactive = st.checkbox("Show items with no stock and no sales", value=False)
+        selected_branch_ids = st.multiselect(
+            "Branches to show and export",
+            options=list(branches),
+            default=list(branches),
+            format_func=lambda branch_id: f"{branch_id} — {branches[branch_id]}",
         )
 
     projection = load_projection(current_settings, include_inactive)
+    projection["item_key"] = projection.apply(item_key, axis=1)
     initialize_selection(projection)
 
-    search_text = st.text_input("Search SKU or description")
-    display_projection = add_order_amounts(projection)
+    search_text = st.text_input("Search SKU, description, vendor, or branch")
+    display = add_order_amounts(projection)
+    display = display.loc[display["branch_id"].isin(selected_branch_ids)]
     if search_text:
         matches = (
-            display_projection["sku"].str.contains(search_text, case=False, na=False)
-            | display_projection["description"].str.contains(
-                search_text, case=False, na=False
-            )
+            display["sku"].str.contains(search_text, case=False, na=False)
+            | display["description"].str.contains(search_text, case=False, na=False)
+            | display["vendor"].str.contains(search_text, case=False, na=False)
+            | display["branch_name"].str.contains(search_text, case=False, na=False)
+            | display["branch_id"].str.contains(search_text, case=False, na=False)
         )
-        display_projection = display_projection.loc[matches]
-
-    display_projection["order_selected"] = display_projection["sku"].isin(
-        st.session_state.selected_skus
-    )
+        display = display.loc[matches]
+    display["order_selected"] = display["item_key"].isin(st.session_state.selected_item_keys)
 
     select_column, clear_column, summary_column = st.columns([1, 1, 3])
     with select_column:
         if st.button("Select visible recommended"):
-            st.session_state.selected_skus.update(
-                display_projection.loc[
-                    display_projection["recommended_order_qty"].fillna(0).gt(0),
-                    "sku",
-                ]
+            st.session_state.selected_item_keys.update(
+                display.loc[display["recommended_order_qty"].gt(0), "item_key"]
             )
             reset_editor_state()
             st.rerun()
     with clear_column:
         if st.button("Clear selection"):
-            st.session_state.selected_skus.clear()
+            st.session_state.selected_item_keys.clear()
             reset_editor_state()
             st.rerun()
     with summary_column:
-        st.caption("Use the Order? checkbox to manually include or exclude an item.")
+        st.caption("Use the Order? checkbox and Order amount for each SKU/branch.")
 
-    edited_projection = st.data_editor(
-        display_projection,
+    edited = st.data_editor(
+        display,
         key="inventory_editor",
         hide_index=True,
         width="stretch",
         height=600,
-        disabled=[
-            column
-            for column in display_projection
-            if column not in {"order_selected", "order_amount"}
-        ],
+        disabled=[column for column in display if column not in {"order_selected", "order_amount"}],
         column_order=[
-            "order_selected",
-            "sku",
-            "description",
-            "on_hand",
-            "on_order",
-            "available",
-            "last_12_month_sales",
-            "avg_daily_sales",
-            "projected_days_remaining",
-            "recommended_order_qty",
-            "order_amount",
+            "order_selected", "sku", "description", "vendor", "branch_id", "branch_name",
+            "on_hand", "on_order", "available", "last_3_month_sales", "avg_daily_sales",
+            "projected_days_remaining", "recommended_order_qty", "order_amount",
         ],
         column_config={
             "order_selected": st.column_config.CheckboxColumn("Order?"),
+            "branch_id": st.column_config.TextColumn("Branch"),
+            "branch_name": st.column_config.TextColumn("Branch name"),
             "on_hand": st.column_config.NumberColumn("On hand", format="%.0f"),
             "on_order": st.column_config.NumberColumn("On order", format="%.0f"),
-            "last_12_month_sales": st.column_config.NumberColumn(
-                "12-month sales", format="%.0f"
-            ),
-            "avg_daily_sales": st.column_config.NumberColumn(
-                "Avg. daily sales", format="%.3f"
-            ),
-            "projected_days_remaining": st.column_config.NumberColumn(
-                "Projected days", format="%.1f"
-            ),
-            "recommended_order_qty": st.column_config.NumberColumn(
-                "Recommended order", format="%.0f"
-            ),
-            "order_amount": st.column_config.NumberColumn(
-                "Order amount",
-                min_value=0,
-                step=1,
-                format="%.0f",
-            ),
+            "last_3_month_sales": st.column_config.NumberColumn("3-month sales", format="%.0f"),
+            "avg_daily_sales": st.column_config.NumberColumn("Avg. daily sales", format="%.3f"),
+            "projected_days_remaining": st.column_config.NumberColumn("Projected days", format="%.1f"),
+            "recommended_order_qty": st.column_config.NumberColumn("Recommended order", format="%.0f"),
+            "order_amount": st.column_config.NumberColumn("Order amount", min_value=0, step=1, format="%.0f"),
         },
     )
-    update_order_state(edited_projection, set(display_projection["sku"]))
+    update_order_state(edited, set(display["item_key"]))
 
-    selected_items = add_order_amounts(projection).loc[
-        projection["sku"].isin(st.session_state.selected_skus)
+    selected = add_order_amounts(projection).loc[
+        projection["item_key"].isin(st.session_state.selected_item_keys)
     ].copy()
-    selected_items = selected_items.loc[selected_items["order_amount"].gt(0)]
-    selected_units = selected_items["order_amount"].sum()
+    selected = selected.loc[selected["branch_id"].isin(selected_branch_ids)]
+    selected = selected.loc[selected["order_amount"].gt(0)]
     item_metric, unit_metric = st.columns(2)
-    item_metric.metric("Selected items", len(selected_items))
-    unit_metric.metric("Recommended units", f"{selected_units:,.0f}")
+    item_metric.metric("Selected SKU/branch orders", len(selected))
+    unit_metric.metric("Total units", f"{selected['order_amount'].sum():,.0f}")
 
-    if not selected_items.empty:
+    if not selected.empty:
+        order_export = build_order_export(selected, selected_branch_ids)
         st.subheader("Purchase-order preview")
-        st.dataframe(
-            selected_items[
-                ["sku", "description", "order_amount"]
-            ],
-            hide_index=True,
-            width="stretch",
-        )
+        st.dataframe(order_export, hide_index=True, width="stretch")
         st.download_button(
-            "Download selected items as CSV",
-            selected_items[["sku", "description", "order_amount"]].to_csv(
-                index=False
-            ).encode("utf-8"),
+            "Download consolidated order CSV",
+            order_export.to_csv(index=False).encode("utf-8"),
             file_name="purchase_order_draft.csv",
             mime="text/csv",
         )
