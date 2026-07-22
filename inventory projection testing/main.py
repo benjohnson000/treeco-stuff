@@ -1,7 +1,8 @@
 import pandas as pd
 
-from database import engine
-from importer import load_spruce_stock
+from database import engine, upsert_usage_history
+from importer import load_spruce_stock, load_spruce_usage
+from metrics import build_inventory_projection
 
 
 def main():
@@ -17,22 +18,27 @@ def main():
 
     print(f"Imported {len(stock)} inventory items.")
 
+    usage = load_spruce_usage("data/usage.csv")
+    matched_usage_rows, unmatched_usage_rows = upsert_usage_history(usage)
+    print(
+        f"Imported {matched_usage_rows} monthly usage records "
+        f"({unmatched_usage_rows} records had no matching inventory SKU)."
+    )
+
     inventory = pd.read_sql(
-        "SELECT * FROM inventory",
+        "SELECT sku, description, on_hand, on_order, available FROM inventory",
         engine
     )
 
-    print(
-        inventory[
-            [
-                "sku",
-                "description",
-                "on_hand",
-                "on_order",
-                "available"
-            ]
-        ]
+    usage_history = pd.read_sql(
+        "SELECT sku, year, month, quantity_used FROM usage_history "
+        "ORDER BY sku, year, month",
+        engine
     )
+
+    projection = build_inventory_projection(inventory, usage_history)
+    print("\nInventory projection")
+    print(projection.to_string(index=False, na_rep="--"))
 
 
 if __name__ == "__main__":
