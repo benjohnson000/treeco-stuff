@@ -1,0 +1,17 @@
+"""Application folders that work when launched from any directory."""
+
+from pathlib import Path
+
+
+APP_DIR = Path(__file__).resolve().parent
+DATA_DIR = APP_DIR / "data"
+BACKUP_DIR = DATA_DIR / "backups"
+IMPORT_DIR = DATA_DIR / "imports"
+DATABASE_FILE = APP_DIR / "inventory.db"
+
+
+def ensure_data_directories():
+    """Create user-accessible folders on first run."""
+    DATA_DIR.mkdir(exist_ok=True)
+    BACKUP_DIR.mkdir(exist_ok=True)
+    IMPORT_DIR.mkdir(exist_ok=True)

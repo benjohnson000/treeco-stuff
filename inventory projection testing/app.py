@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
 
+from app_paths import IMPORT_DIR, ensure_data_directories
 from branches import load_branches
 from config import load_settings, save_settings
 from database import engine
@@ -18,7 +19,7 @@ def load_projection(settings, include_inactive):
         usage_history = pd.read_sql("SELECT * FROM usage_history", engine)
     except Exception as error:
         st.error("No imported inventory data is available yet.")
-        st.code("py -3.14 main.py", language="powershell")
+        st.info("Upload a Stock Status CSV and a 12-month Usage CSV in the sidebar.")
         st.caption(f"Database detail: {error}")
         st.stop()
 
@@ -29,6 +30,17 @@ def load_projection(settings, include_inactive):
 
 def reset_editor_state():
     st.session_state.pop("inventory_editor", None)
+
+
+def archive_uploaded_report(uploaded_file, report_name):
+    """Keep the source report that produced the current database snapshot."""
+    ensure_data_directories()
+    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+    destination = IMPORT_DIR / f"{timestamp}_{report_name}.csv"
+    uploaded_file.seek(0)
+    destination.write_bytes(uploaded_file.read())
+    uploaded_file.seek(0)
+    return destination
 
 
 def item_key(row):
@@ -155,6 +167,8 @@ def main():
                     raise ValueError("The usage report did not contain any branch usage rows.")
 
                 replace_imported_data(imported_inventory, imported_usage)
+                archive_uploaded_report(stock_file, "stock")
+                archive_uploaded_report(usage_file, "usage")
                 st.session_state.pop("selection_initialized", None)
                 st.session_state.pop("selected_item_keys", None)
                 st.session_state.pop("order_amount_overrides", None)
@@ -167,8 +181,15 @@ def main():
             except Exception as error:
                 st.error(f"Import failed: {error}")
 
-        include_inactive = st.checkbox("Show items with no stock and no sales", value=False)
-        vendor_filter = st.text_input("Filter by vendor", placeholder="Vendor code")
+    include_inactive = False
+    selected_branch_ids = list(branches)
+    projection = load_projection(current_settings, include_inactive)
+    projection["item_key"] = projection.apply(item_key, axis=1)
+    initialize_selection(projection)
+
+    st.subheader("Filters")
+    filter_columns = st.columns([1.4, 1.4, 2.4, 1.2])
+    with filter_columns[0]:
         selected_branch_ids = st.multiselect(
             "Branches to show and export",
             options=list(branches),
@@ -176,11 +197,16 @@ def main():
             format_func=lambda branch_id: f"{branch_id} — {branches[branch_id]}",
         )
 
-    projection = load_projection(current_settings, include_inactive)
-    projection["item_key"] = projection.apply(item_key, axis=1)
-    initialize_selection(projection)
+    with filter_columns[1]:
+        vendor_filter = st.text_input("Vendor", placeholder="Vendor code")
+    with filter_columns[2]:
+        search_text = st.text_input("SKU or description", placeholder="Search items")
+    with filter_columns[3]:
+        include_inactive = st.checkbox("Show inactive", value=False)
 
-    search_text = st.text_input("Search SKU, description, vendor, or branch")
+    if include_inactive:
+        projection = load_projection(current_settings, include_inactive)
+        projection["item_key"] = projection.apply(item_key, axis=1)
     display = add_order_amounts(projection)
     display = display.loc[display["branch_id"].isin(selected_branch_ids)]
     if search_text:

@@ -1,8 +1,8 @@
 import json
-from pathlib import Path
 
+from app_paths import APP_DIR
 
-SETTINGS_FILE = Path(__file__).with_name("settings.json")
+SETTINGS_FILE = APP_DIR / "settings.json"
 REQUIRED_SETTINGS = (
     "stock_target_days",
     "vendor_lead_time_days",

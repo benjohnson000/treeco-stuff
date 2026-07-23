@@ -1,0 +1,26 @@
+# Spruce Inventory Reorder Tool
+
+## Daily workflow
+
+1. Double-click `start_app.bat`.
+2. Generate the Spruce Stock Status CSV and the 12-month Usage CSV.
+3. Upload both files in the application sidebar.
+4. Review the recommendations, adjust order amounts, and download the consolidated order CSV.
+
+## User-accessible data
+
+- `data/flooring_vendors.csv`: SKU-to-vendor-code mapping.
+- `data/branches.json`: configured branch names and IDs.
+- `data/imports/`: archived source reports from every successful import.
+- `data/backups/`: database backup created before every import.
+- `inventory.db`: current working database.
+
+## First-time setup
+
+Install Python 3.11 or newer, selecting **Add Python to PATH**, then run:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+After that, double-click `start_app.bat` to open the tool.
