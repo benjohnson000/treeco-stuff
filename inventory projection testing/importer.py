@@ -1,9 +1,10 @@
 import csv
+import io
 
 import pandas as pd
 
 from branches import load_branches
-from vendors import find_vendor, load_vendors
+from vendors import find_vendor_by_sku, load_vendor_map
 
 
 STOCK_COLUMNS = [
@@ -11,13 +12,13 @@ STOCK_COLUMNS = [
     "available", "min_qty", "max_qty", "suggested_qty", "unit", "last_received",
     "last_cost", "avg_cost", "vendor",
 ]
-USAGE_COLUMNS = ["sku", "branch_id", "last_3_month_sales"]
+USAGE_COLUMNS = ["sku", "branch_id", "last_12_month_sales"]
 
 
 def load_spruce_stock(filename, vendors_filename=None, branches_filename=None):
     """Load a combined Spruce Stock Status report into one SKU/branch row."""
     branches = load_branches(branches_filename) if branches_filename else load_branches()
-    vendors = load_vendors(vendors_filename) if vendors_filename else load_vendors()
+    vendor_map = load_vendor_map(vendors_filename) if vendors_filename else load_vendor_map()
     records = []
     current_item = None
 
@@ -47,7 +48,7 @@ def load_spruce_stock(filename, vendors_filename=None, branches_filename=None):
             "last_received": row[8].strip(),
             "last_cost": _number(row[9]),
             "avg_cost": _number(row[10]),
-            "vendor": find_vendor(current_item["description"], vendors),
+            "vendor": find_vendor_by_sku(current_item["sku"], vendor_map),
         })
 
     inventory = pd.DataFrame(records, columns=STOCK_COLUMNS)
@@ -60,12 +61,16 @@ def load_spruce_stock(filename, vendors_filename=None, branches_filename=None):
 
 
 def load_spruce_usage(filename, branches_filename=None):
-    """Load the combined Spruce Usage report's rolling three-month sales."""
+    """Load Spruce's 12-month monthly sales report into one row per SKU/branch."""
     branches = load_branches(branches_filename) if branches_filename else load_branches()
     records = []
     current_sku = None
+    month_columns = None
 
     for row in _csv_rows(filename):
+        if _is_usage_header(row):
+            month_columns = _usage_month_columns(row)
+            continue
         if _is_usage_report_row(row):
             continue
 
@@ -73,19 +78,39 @@ def load_spruce_usage(filename, branches_filename=None):
             current_sku = row[0].strip()
             continue
 
-        if not current_sku or not _is_branch_usage_row(row, branches):
+        if not current_sku or month_columns is None or not _is_branch_usage_row(row, branches):
             continue
 
+        monthly_sales = [_number(row[index]) for index in range(2, 14)]
         records.append({
             "sku": current_sku,
             "branch_id": row[0].strip(),
-            "last_3_month_sales": _number(row[1]),
+            "last_12_month_sales": sum(monthly_sales),
         })
 
+    if month_columns is None:
+        raise ValueError(
+            "This is not the 12-month Spruce usage report. "
+            "Upload the report with 12 monthly columns and a Total column."
+        )
+    if len({record["branch_id"] for record in records}) != len(branches):
+        raise ValueError("The usage report must contain sales rows for all configured branches.")
     return pd.DataFrame(records, columns=USAGE_COLUMNS)
 
 
 def _csv_rows(filename):
+    if hasattr(filename, "read"):
+        filename.seek(0)
+        contents = filename.read()
+        if isinstance(contents, bytes):
+            contents = contents.decode("utf-8-sig")
+        else:
+            contents = contents.lstrip("\ufeff")
+        rows = csv.reader(io.StringIO(contents), escapechar="\\")
+        for row in rows:
+            yield [value.strip() for value in row]
+        return
+
     with open(filename, encoding="utf-8-sig", newline="") as file:
         for row in csv.reader(file, escapechar="\\"):
             yield [value.strip() for value in row]
@@ -102,7 +127,21 @@ def _is_branch_stock_row(row, branches):
 
 
 def _is_branch_usage_row(row, branches):
-    return len(row) >= 8 and row[0] in branches
+    return len(row) >= 15 and row[0] in branches
+
+
+def _is_usage_header(row):
+    return bool(row) and row[0].casefold() == "item" and len(row) >= 15
+
+
+def _usage_month_columns(row):
+    months = row[2:-1]
+    if len(months) != 12 or not all("/" in month for month in months):
+        raise ValueError(
+            "This is not the 12-month Spruce usage report. "
+            "Upload the report with 12 monthly columns and a Total column."
+        )
+    return [f"sales_{month.replace('/', '_')}" for month in months]
 
 
 def _is_stock_report_row(row):

@@ -4,6 +4,8 @@ import streamlit as st
 from branches import load_branches
 from config import load_settings, save_settings
 from database import engine
+from database import replace_imported_data
+from importer import load_spruce_stock, load_spruce_usage
 from metrics import build_inventory_projection
 
 
@@ -129,7 +131,44 @@ def main():
             st.success("Settings saved.")
             st.rerun()
 
+        st.header("Import Spruce reports")
+        st.caption("Upload both reports to replace the current database snapshot.")
+        stock_file = st.file_uploader(
+            "Stock Status CSV", type=["csv", "CSV"], key="stock_upload"
+        )
+        usage_file = st.file_uploader(
+            "12-month Usage CSV", type=["csv", "CSV"], key="usage_upload"
+        )
+        import_clicked = st.button(
+            "Process and save reports",
+            disabled=stock_file is None or usage_file is None,
+            use_container_width=True,
+        )
+
+        if import_clicked:
+            try:
+                imported_inventory = load_spruce_stock(stock_file)
+                imported_usage = load_spruce_usage(usage_file)
+                if imported_inventory.empty:
+                    raise ValueError("The stock report did not contain any branch inventory rows.")
+                if imported_usage.empty:
+                    raise ValueError("The usage report did not contain any branch usage rows.")
+
+                replace_imported_data(imported_inventory, imported_usage)
+                st.session_state.pop("selection_initialized", None)
+                st.session_state.pop("selected_item_keys", None)
+                st.session_state.pop("order_amount_overrides", None)
+                reset_editor_state()
+                st.success(
+                    f"Saved {len(imported_inventory):,} inventory rows and "
+                    f"{len(imported_usage):,} usage rows."
+                )
+                st.rerun()
+            except Exception as error:
+                st.error(f"Import failed: {error}")
+
         include_inactive = st.checkbox("Show items with no stock and no sales", value=False)
+        vendor_filter = st.text_input("Filter by vendor", placeholder="Vendor code")
         selected_branch_ids = st.multiselect(
             "Branches to show and export",
             options=list(branches),
@@ -153,6 +192,12 @@ def main():
             | display["branch_id"].str.contains(search_text, case=False, na=False)
         )
         display = display.loc[matches]
+    if vendor_filter:
+        display = display.loc[
+            display["vendor"].astype("string").str.contains(
+                vendor_filter, case=False, na=False
+            )
+        ]
     display["order_selected"] = display["item_key"].isin(st.session_state.selected_item_keys)
 
     select_column, clear_column, summary_column = st.columns([1, 1, 3])
@@ -180,7 +225,7 @@ def main():
         disabled=[column for column in display if column not in {"order_selected", "order_amount"}],
         column_order=[
             "order_selected", "sku", "description", "vendor", "branch_id", "branch_name",
-            "on_hand", "on_order", "available", "last_3_month_sales", "avg_daily_sales",
+            "on_hand", "on_order", "available", "last_12_month_sales", "avg_daily_sales",
             "projected_days_remaining", "recommended_order_qty", "order_amount",
         ],
         column_config={
@@ -189,7 +234,7 @@ def main():
             "branch_name": st.column_config.TextColumn("Branch name"),
             "on_hand": st.column_config.NumberColumn("On hand", format="%.0f"),
             "on_order": st.column_config.NumberColumn("On order", format="%.0f"),
-            "last_3_month_sales": st.column_config.NumberColumn("3-month sales", format="%.0f"),
+            "last_12_month_sales": st.column_config.NumberColumn("12-month sales", format="%.0f"),
             "avg_daily_sales": st.column_config.NumberColumn("Avg. daily sales", format="%.3f"),
             "projected_days_remaining": st.column_config.NumberColumn("Projected days", format="%.1f"),
             "recommended_order_qty": st.column_config.NumberColumn("Recommended order", format="%.0f"),

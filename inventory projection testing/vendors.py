@@ -1,7 +1,9 @@
 from pathlib import Path
+import csv
 
 
 VENDORS_FILE = Path(__file__).parent / "data" / "vendors.txt"
+VENDOR_MAP_FILE = Path(__file__).parent / "data" / "flooring_vendors.csv"
 
 
 def load_vendors(filename=VENDORS_FILE):
@@ -31,3 +33,22 @@ def find_vendor(description, vendors):
             return vendor
 
     return None
+
+
+def load_vendor_map(filename=VENDOR_MAP_FILE):
+    """Load the authoritative SKU-to-vendor-code mapping export."""
+    mapping = {}
+    path = Path(filename)
+    if not path.exists():
+        return mapping
+    with open(path, encoding="utf-8-sig", newline="") as file:
+        for row in csv.DictReader(file):
+            sku = (row.get("SKU") or "").strip()
+            vendor = (row.get("Vendor") or "").strip()
+            if sku:
+                mapping[sku] = vendor or None
+    return mapping
+
+
+def find_vendor_by_sku(sku, vendor_map):
+    return vendor_map.get(str(sku).strip())

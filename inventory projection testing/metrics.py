@@ -2,8 +2,7 @@ import numpy as np
 import pandas as pd
 
 
-DAYS_PER_MONTH = 30.4375
-USAGE_MONTHS = 3
+DAYS_PER_YEAR = 365.25
 
 
 def build_inventory_projection(inventory, usage_history, settings, include_inactive=False):
@@ -11,9 +10,9 @@ def build_inventory_projection(inventory, usage_history, settings, include_inact
     projection = inventory.merge(
         usage_history, on=["sku", "branch_id"], how="left"
     )
-    projection["last_3_month_sales"] = projection["last_3_month_sales"].fillna(0)
+    projection["last_12_month_sales"] = projection["last_12_month_sales"].fillna(0)
     projection["avg_daily_sales"] = (
-        projection["last_3_month_sales"] / (DAYS_PER_MONTH * USAGE_MONTHS)
+        projection["last_12_month_sales"] / DAYS_PER_YEAR
     )
     # Incoming purchase orders are part of the inventory position: they should
     # extend coverage and reduce any new recommendation.
@@ -23,7 +22,7 @@ def build_inventory_projection(inventory, usage_history, settings, include_inact
 
     if not include_inactive:
         projection = projection.loc[
-            ~(projection["on_hand"].eq(0) & projection["last_3_month_sales"].eq(0))
+        ~(projection["on_hand"].eq(0) & projection["last_12_month_sales"].eq(0))
         ].copy()
 
     projection["projected_days_remaining"] = (
@@ -47,11 +46,11 @@ def build_inventory_projection(inventory, usage_history, settings, include_inact
 
     output_columns = [
         "sku", "description", "vendor", "branch_id", "branch_name", "on_hand",
-        "on_order", "available", "last_3_month_sales", "avg_daily_sales",
+        "on_order", "available", "last_12_month_sales", "avg_daily_sales",
         "projected_days_remaining", "recommended_order_qty",
     ]
     return projection[output_columns].round({
-        "last_3_month_sales": 1,
+        "last_12_month_sales": 1,
         "avg_daily_sales": 3,
         "projected_days_remaining": 1,
         "recommended_order_qty": 0,
